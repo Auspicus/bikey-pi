@@ -1,52 +1,36 @@
 use rppal::gpio::{Gpio, Level, Trigger};
-//use rppal::i2c::I2c;
 use std::time::{SystemTime};
-use std::sync::{Arc, Mutex};
 
 const WHEEL_DIAMETER: f64 = 0.5858; //110/70 Front wheel diameter in metres
 const WHEEL_CIRCUMFERENCE: f64 = 1.84034; //110/70 Front wheel circumference in metres
+const NANO_SECONDS_TO_SECONDS: f64 = 1000.0 * 1000.0 * 1000.0;
 
-
-/// interrupt on rising edge
-/// 
-/// save current time to endTime
-/// 
-/// time = endTime - startTime
-/// 
-/// RPM = time*60
-/// 
-/// return RPM
-/// 
-/// startTime = endTime
-/// 
-fn tacho(mut inter: &mut Interface) -> f64 {
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
-    let time_taken = (now - inter.last_interrupt_time_tacho) as f64;
-    inter.last_interrupt_time_tacho = now;
-
-    ((1000.0 / time_taken) / 60.0) / 1000.0 / 1000.0
+/// Returns revs per minute
+fn read_tacho(now: u128, last_interrupt_time_tacho: u128) -> f64 {
+    let time_taken = (now - last_interrupt_time_tacho) as f64;
+    let revs_per_second = time_taken / NANO_SECONDS_TO_SECONDS;
+    revs_per_second * 60.0
 }
 
-fn speed(mut inter: &mut Interface) -> f64 {
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
-    let time_taken = (now - inter.last_interrupt_time_speed) as f64;
-    inter.last_interrupt_time_speed = now;
-
-    WHEEL_CIRCUMFERENCE / 4.0 / time_taken
+/// Returns kilometres per hour
+fn read_speed(now: u128, last_interrupt_time_speed: u128) -> f64 {
+    let time_taken = (now - last_interrupt_time_speed) as f64;
+    let metres_per_second = (WHEEL_CIRCUMFERENCE / 4.0 / time_taken) * NANO_SECONDS_TO_SECONDS;
+    (metres_per_second / 1000.0) * (60.0 * 60.0)
 }
 
-fn fuel() -> f32 {
+fn read_fuel() -> f64 {
     //read I2c address 0
-    let out: f32;
+    let out: f64;
 
     out = 0.0;
 
     return out;
 }
 
-fn temp() -> f32 {
+fn read_temp() -> f64 {
     //read I2c address 1
-    let out: f32;
+    let out: f64;
 
     out = 0.0;
 
@@ -54,38 +38,31 @@ fn temp() -> f32 {
 }
 
 //Setup
-struct Interface {
-    highbeam: Level,
-    left: Level,
-    right: Level,
-    neutral: Level,
-    injection: Level,
+struct WebInterface {
+    highbeam_indicator: Level,
+    left_indicator: Level,
+    right_indicator: Level,
+    neutral_indicator: Level,
+    injection_indicator: Level,
     speed: f64,
     tacho: f64,
-    fuel: f32,
-    temp: f32,
-    last_interrupt_time_speed: u128,
-    last_interrupt_time_tacho: u128,
+    fuel: f64,
+    temp: f64,
 }
 
 fn main() {
-    let inter1 = Arc::new(
-        Mutex::new(
-            Interface {
-                highbeam: Level::Low,
-                left: Level::Low,
-                right: Level::Low,
-                neutral: Level::Low,
-                injection: Level::Low,
-                speed: 0.0,
-                tacho: 0.0,
-                fuel: 0.0,
-                temp: 0.0,
-                last_interrupt_time_speed: 0,
-                last_interrupt_time_tacho: 0,
-            }
-        )
-    );
+    let mut highbeam_indicator = Level::Low;
+    let mut left_indicator = Level::Low;
+    let mut right_indicator = Level::Low;
+    let mut neutral_indicator = Level::Low;
+    let mut injection_indicator = Level::Low;
+    let mut fuel: f64 = 0.0;
+    let mut temp: f64 = 0.0;
+
+    let mut speed: f64 = 0.0;
+    let mut tacho: f64 = 0.0;
+    let mut last_interrupt_time_speed: u128 = 0;
+    let mut last_interrupt_time_tacho: u128 = 0;
 
     let gpio = Gpio::new().expect("Failed to acquire GPIO.");
     // let inputpin = InputPin::new(mut pin: Pin, pud_mode: PullUpDown);
@@ -115,38 +92,65 @@ fn main() {
         .expect("Failed to acquire pin 22.")
         .into_input();
 
-    let arc_copy_speed = Arc::clone(&inter1);
+    let speed_interrupt_handler = {
+        move |_| {
+            let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+            speed = read_speed(now, last_interrupt_time_speed);
+        }
+    };
     let _pin23 = gpio //speed pin
         .get(23)
         .expect("Failed to acquire pin 23.")
         .into_input()
-        .set_async_interrupt(Trigger::RisingEdge, move |_| {
-            let mut guard = arc_copy_speed.lock().unwrap();
-            guard.speed = speed(&mut guard);
-        }); // || refers to variable
+        .set_async_interrupt(Trigger::RisingEdge, speed_interrupt_handler); // || refers to variable
 
-    let arc_copy_tacho = Arc::clone(&inter1);
+    let tacho_interrupt_handler = {
+        move |_| {
+            let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+            tacho = read_tacho(now, last_interrupt_time_tacho);
+        }
+    };
     let _pin25 = gpio //tachometer pin
         .get(25)
         .expect("Failed to acquire pin 25.")
         .into_input()
-        .set_async_interrupt(Trigger::RisingEdge, move |_| {
-            let mut guard = arc_copy_tacho.lock().unwrap();
-            guard.tacho = tacho(&mut guard);
-        });
+        .set_async_interrupt(Trigger::RisingEdge, tacho_interrupt_handler);
 
     loop {
-        let mut guard = inter1.lock().unwrap();
-        guard.highbeam = pin4.read();
-        guard.left = pin17.read();
-        guard.right = pin18.read();
-        guard.neutral = pin27.read();
-        guard.injection = pin22.read();
-        guard.fuel = fuel();
-        guard.temp = temp();
+        highbeam_indicator = pin4.read();
+        left_indicator = pin17.read();
+        right_indicator = pin18.read();
+        neutral_indicator = pin27.read();
+        injection_indicator = pin22.read();
+        fuel = read_fuel();
+        temp = read_temp();
 
-        //if inter1.highbeam == Level::High {
-        println!("High Beam On");
-        //}
+        // Create a struct which represents all current values
+        let interface = WebInterface {
+            highbeam_indicator,
+            left_indicator,
+            right_indicator,
+            neutral_indicator,
+            injection_indicator,
+            fuel,
+            temp,
+            speed,
+            tacho,
+        };
+
+        // Send this value to the web browser
+        // @todo.
     }
+}
+
+#[test]
+fn test_speed_interrupt_handler() {
+    let speed = read_speed((0.01 * NANO_SECONDS_TO_SECONDS) as u128, 0);
+    assert_eq!(speed, 46.008500000000005);
+}
+
+#[test]
+fn test_tacho_interrupt_handler() {
+    let tacho = read_tacho((1.0 * NANO_SECONDS_TO_SECONDS) as u128, 0);
+    assert_eq!(tacho, 60.0);
 }
