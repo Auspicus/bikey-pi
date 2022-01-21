@@ -1,5 +1,7 @@
 use rppal::gpio::{Gpio, Level, Trigger};
-use std::time::{SystemTime};
+use std::time::{SystemTime, Duration};
+use std::sync::{Arc, Mutex};
+use std::thread::sleep;
 
 const WHEEL_DIAMETER: f64 = 0.5858; //110/70 Front wheel diameter in metres
 const WHEEL_CIRCUMFERENCE: f64 = 1.84034; //110/70 Front wheel circumference in metres
@@ -51,18 +53,10 @@ struct WebInterface {
 }
 
 fn main() {
-    let mut highbeam_indicator = Level::Low;
-    let mut left_indicator = Level::Low;
-    let mut right_indicator = Level::Low;
-    let mut neutral_indicator = Level::Low;
-    let mut injection_indicator = Level::Low;
-    let mut fuel: f64 = 0.0;
-    let mut temp: f64 = 0.0;
-
-    let mut speed: f64 = 0.0;
-    let mut tacho: f64 = 0.0;
-    let mut last_interrupt_time_speed: u128 = 0;
-    let mut last_interrupt_time_tacho: u128 = 0;
+    let mut speed: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
+    let mut tacho: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
+    let mut last_interrupt_time_speed: Arc<Mutex<u128>> = Arc::new(Mutex::new(0));
+    let mut last_interrupt_time_tacho: Arc<Mutex<u128>> = Arc::new(Mutex::new(0));
 
     let gpio = Gpio::new().expect("Failed to acquire GPIO.");
     // let inputpin = InputPin::new(mut pin: Pin, pud_mode: PullUpDown);
@@ -93,9 +87,13 @@ fn main() {
         .into_input();
 
     let speed_interrupt_handler = {
+        let speed = speed.clone();
+        let last_interrupt_time_speed = last_interrupt_time_speed.clone();
         move |_| {
             let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
-            speed = read_speed(now, last_interrupt_time_speed);
+            let mut last = last_interrupt_time_speed.lock().unwrap();
+            *speed.lock().unwrap() = read_speed(now, *last);
+            *last = now;
         }
     };
     let _pin23 = gpio //speed pin
@@ -105,9 +103,13 @@ fn main() {
         .set_async_interrupt(Trigger::RisingEdge, speed_interrupt_handler); // || refers to variable
 
     let tacho_interrupt_handler = {
+        let tacho = tacho.clone();
+        let last_interrupt_time_tacho = last_interrupt_time_tacho.clone();
         move |_| {
             let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
-            tacho = read_tacho(now, last_interrupt_time_tacho);
+            let mut last = last_interrupt_time_tacho.lock().unwrap();
+            *tacho.lock().unwrap() = read_tacho(now, *last);
+            *last = now;
         }
     };
     let _pin25 = gpio //tachometer pin
@@ -117,29 +119,23 @@ fn main() {
         .set_async_interrupt(Trigger::RisingEdge, tacho_interrupt_handler);
 
     loop {
-        highbeam_indicator = pin4.read();
-        left_indicator = pin17.read();
-        right_indicator = pin18.read();
-        neutral_indicator = pin27.read();
-        injection_indicator = pin22.read();
-        fuel = read_fuel();
-        temp = read_temp();
-
         // Create a struct which represents all current values
         let interface = WebInterface {
-            highbeam_indicator,
-            left_indicator,
-            right_indicator,
-            neutral_indicator,
-            injection_indicator,
-            fuel,
-            temp,
-            speed,
-            tacho,
+            highbeam_indicator: pin4.read(),
+            left_indicator: pin17.read(),
+            right_indicator: pin18.read(),
+            neutral_indicator: pin27.read(),
+            injection_indicator: pin22.read(),
+            fuel: read_fuel(),
+            temp: read_temp(),
+            speed: *speed.lock().unwrap(),
+            tacho: *tacho.lock().unwrap(),
         };
 
         // Send this value to the web browser
         // @todo.
+
+        sleep(Duration::from_secs(1));
     }
 }
 
