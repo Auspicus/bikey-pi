@@ -143,10 +143,10 @@ fn main() {
 fn test_speed_interrupt_handler() {
     // Travelling for 46,008,500 nanoseconds
     // between interrupts means you are
-    // travelling at 10 metres/second
-    // or 36 kilometres per hour
-    let speed = read_speed(46_008_500, 0);
-    assert_eq!(speed, 36.0);
+    // travelling at 40 metres per second
+    // or 144 kilometres per hour.
+    let speed = read_speed(11_502_125, 0);
+    assert_eq!(speed, 144.0);
 }
 
 #[test]
