@@ -141,12 +141,20 @@ fn main() {
 
 #[test]
 fn test_speed_interrupt_handler() {
-    let speed = read_speed((0.01 * NANO_SECONDS_TO_SECONDS) as u128, 0);
-    assert_eq!(speed, 46.008500000000005);
+    // Travelling for 46,008,500 nanoseconds
+    // between interrupts means you are
+    // travelling at 10 metres/second
+    // or 36 kilometres per hour
+    let speed = read_speed(46_008_500, 0);
+    assert_eq!(speed, 36.0);
 }
 
 #[test]
 fn test_tacho_interrupt_handler() {
+    // Revolving at a rate of 1 second
+    // between interrupts means that
+    // the engine is revolving at
+    // 60 rpm.
     let tacho = read_tacho((1.0 * NANO_SECONDS_TO_SECONDS) as u128, 0);
     assert_eq!(tacho, 60.0);
 }
